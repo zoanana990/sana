@@ -1,1 +1,5 @@
-.idea
+__pycache__/
+*.pyc
+.stock_app_history
+.env
+venv/
