@@ -5,7 +5,7 @@ import pandas as pd
 import mplfinance as mpf
 from decimal import Decimal
 
-
+# twse_url = f'https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date=20220101&stockNo={stock_code}'
 class StockDataFetcher:
     def __init__(self, db_config, stock_no, start_date, end_date):
         self.db_config = db_config
@@ -16,17 +16,17 @@ class StockDataFetcher:
 
     def connect_db(self):
         self.db_connection = mysql.connector.connect(**self.db_config)
-        print("成功連接資料庫！")
+        print("Successfully connected to the database!")
 
     def disconnect_db(self):
         if self.db_connection:
             self.db_connection.close()
-            print("資料庫連線已關閉。")
+            print("Database connection closed.")
 
     def insert_data(self, records):
         cursor = self.db_connection.cursor()
         for record in records:
-            # 將民國年轉換為西元年
+            # Convert Taiwanese year to Western year
             date_parts = record[0].split("/")
             year = int(date_parts[0]) + 1911
             month = int(date_parts[1])
@@ -42,7 +42,7 @@ class StockDataFetcher:
             price_change = record[7]
             transaction_count = int(record[8].replace(",", ""))
 
-            # 插入資料到資料表
+            # Insert the data into the database table
             cursor.execute("""
                 INSERT INTO stock_prices 
                 (stock_no, date, volume, turnover, open_price, high_price, low_price, close_price, price_change, transaction_count)
@@ -63,7 +63,7 @@ class StockDataFetcher:
         data = cursor.fetchall()
         cursor.close()
         df = pd.DataFrame(data)
-        # 確保 'date' 是日期類型
+        # Ensure 'date' is in datetime format
         df['date'] = pd.to_datetime(df['date'])
         return df
 
@@ -71,11 +71,11 @@ class StockDataFetcher:
 class StockDataPlotter:
     @staticmethod
     def plot_kline_with_volume(data, start_date=None, end_date=None, support=None, resistance=None):
-        # 確保資料格式正確
+        # Ensure the data format is correct
         data['date'] = pd.to_datetime(data['date'])
         data.set_index('date', inplace=True)
 
-        # 篩選日期區間
+        # Filter data by date range
         if start_date:
             start_date = pd.to_datetime(start_date)
             data = data[data.index >= start_date]
@@ -83,7 +83,7 @@ class StockDataPlotter:
             end_date = pd.to_datetime(end_date)
             data = data[data.index <= end_date]
 
-        # 轉換數據格式為繪圖需求
+        # Convert data to the required format for plotting
         data['Open'] = pd.to_numeric(data['open_price'], errors='coerce')
         data['High'] = pd.to_numeric(data['high_price'], errors='coerce')
         data['Low'] = pd.to_numeric(data['low_price'], errors='coerce')
@@ -91,16 +91,20 @@ class StockDataPlotter:
         data['Volume'] = pd.to_numeric(data['volume'], errors='coerce')
         data.fillna(method='ffill', inplace=True)
 
-        # 繪圖設置
+        # Set up additional plots (support/resistance lines)
         ap = []
-        if support:
-            ap.append(mpf.make_addplot([support] * len(data), color='green', linestyle='--', width=1))
-        if resistance:
-            ap.append(mpf.make_addplot([resistance] * len(data), color='red', linestyle='--', width=1))
+        if support is not None:
+            ap.append(mpf.make_addplot([float(support)] * len(data), color='green', linestyle='--', width=1))  # Convert to float
+        if resistance is not None:
+            ap.append(mpf.make_addplot([float(resistance)] * len(data), color='red', linestyle='--', width=1))  # Convert to float
 
+        # Plot the K-line chart with volume
         mpf.plot(data, type='candle', volume=True, title='K-Line and Volume with Support/Resistance',
                  style='charles', ylabel='Price', ylabel_lower='Volume', addplot=ap)
 
+class StockPattern:
+    def __init__(self):
+        pass
 
 class StockPatternAnalyzer:
     def __init__(self, data, start_date, end_date):
@@ -109,9 +113,14 @@ class StockPatternAnalyzer:
         self.end_date = pd.to_datetime(end_date)
         self.filtered_data = self.data[(self.data['date'] >= self.start_date) & (self.data['date'] <= self.end_date)]
 
-        # 動態計算支撐線和壓力線
+        # TODO: Dynamically calculate support and resistance levels
         self.support = Decimal(self.filtered_data['low_price'].min())  # Convert to Decimal
         self.resistance = Decimal(self.filtered_data['high_price'].max())  # Convert to Decimal
+
+        # TODO: There are several patterns in a interval, furthermore, there are nested mini pattern in a bit pattern
+
+    def get_support_and_resistance(self):
+        pass
 
     def is_consolidation(self):
         if self.filtered_data.empty:
@@ -165,20 +174,23 @@ if __name__ == "__main__":
     start_date = datetime(2011, 1, 1)
     end_date = datetime.now()
 
+    # Fetch stock data
     fetcher = StockDataFetcher(db_config, stock_no, start_date, end_date)
     fetcher.connect_db()
 
     data = fetcher.get_data_from_db()
     fetcher.disconnect_db()
 
+    # Set user-defined date range for analysis
     user_start_date = "2014-12-01"
-    user_end_date = "2015-01-01"
+    user_end_date = "2015-03-01"
 
+    # Perform pattern analysis
     analyzer = StockPatternAnalyzer(data, user_start_date, user_end_date)
     analysis_result = analyzer.analyze()
-    print("型態分析結果：", analysis_result)
+    print("Pattern analysis result:", analysis_result)
 
-    # 繪圖
+    # Plot the data with support/resistance lines
     plotter = StockDataPlotter()
     plotter.plot_kline_with_volume(data, user_start_date, user_end_date,
                                    support=analysis_result['support'],
