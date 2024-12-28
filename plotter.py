@@ -27,9 +27,9 @@ class StockDataPlotter:
         # Set up additional plots (support/resistance lines)
         ap = []
         if support is not None:
-            ap.append(mpf.make_addplot([float(support)] * len(data), color='blue', linestyle='--', width=1))  # Convert to float
+            ap.append(mpf.make_addplot([float(support)] * len(data), color='green', linestyle='--', width=1))  # Convert to float
         if resistance is not None:
-            ap.append(mpf.make_addplot([float(resistance)] * len(data), color='purple', linestyle='--', width=1))  # Convert to float
+            ap.append(mpf.make_addplot([float(resistance)] * len(data), color='red', linestyle='--', width=1))  # Convert to float
 
         # Plot the K-line chart with volume
         mpf.plot(data, type='candle', volume=True, title='K-Line and Volume with Support/Resistance',

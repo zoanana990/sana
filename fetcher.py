@@ -12,7 +12,8 @@ class StockDataFetcher:
         self.start_date = start_date
         self.end_date = end_date
         self.db_connection = None
-        self.base_url = "https://www.twse.com.tw/exchangeReport/STOCK_DAY"
+        self.twse_url = "https://www.twse.com.tw/exchangeReport/STOCK_DAY"
+        self.tpex_url = "https://www.tpex.org.tw/web/stock/aftertrading/daily_trading_info/st43_result.php"
 
     def connect_db(self):
         try:
@@ -34,8 +35,25 @@ class StockDataFetcher:
             print(f"Error: {err}")
             raise
 
+    def fetch_stock_data(self, date_str):
+        """嘗試從上市和上櫃市場抓取股票資料"""
+        # 先嘗試從上市市場抓取
+        data = self.fetch_twse_data(date_str)
+        if data:
+            print(f"Found {self.stock_no} in TWSE market")
+            return data
+            
+        # 如果上市市場沒有，嘗試從上櫃市場抓取
+        data = self.fetch_tpex_data(date_str)
+        if data:
+            print(f"Found {self.stock_no} in TPEx market")
+            return data
+            
+        print(f"Stock {self.stock_no} not found in either market")
+        return None
+
     def fetch_twse_data(self, date_str):
-        """從 TWSE 抓取某月的股票資料"""
+        """從台灣證券交易所抓取資料"""
         params = {
             'response': 'json',
             'date': date_str,
@@ -43,20 +61,77 @@ class StockDataFetcher:
         }
         
         try:
-            response = requests.get(self.base_url, params=params)
+            response = requests.get(self.twse_url, params=params)
             if response.status_code != 200:
-                print(f"Error fetching data: status code {response.status_code}")
                 return None
             
             data = response.json()
             if data.get('stat') != 'OK':
-                print(f"Error in response: {data.get('stat')}")
                 return None
                 
             return data.get('data', [])
             
+        except Exception as e:
+            print(f"TWSE request failed: {e}")
+            return None
+
+    def fetch_tpex_data(self, date_str):
+        """從證券櫃檯買賣中心抓取資料"""
+        # 轉換日期格式 (yyyymmdd -> yyy/mm)
+        year = int(date_str[:4]) - 1911  # 轉換為民國年
+        month = date_str[4:6]
+        
+        params = {
+            'response': 'json',
+            'date': f'{year}/{month}/01',
+            'stockNo': self.stock_no
+        }
+        
+        url = "https://www.tpex.org.tw/web/stock/aftertrading/daily_trading_info/st43_result.php"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3'
+        }
+        
+        try:
+            response = requests.get(url, params=params, headers=headers)
+            response.raise_for_status()  # 如果回應不是 200 會拋出異常
+            
+            # 印出回應內容以便偵錯
+            print(f"TPEx response: {response.text[:200]}...")
+            
+            data = response.json()
+            if not data.get('data'):
+                return None
+
+            # 轉換資料格式以匹配 TWSE 格式
+            converted_data = []
+            for row in data['data']:
+                try:
+                    # 檢查是否有空值或無效值
+                    if '--' in row or not row[0]:  # 確保有日期
+                        continue
+                    
+                    converted_data.append([
+                        f"{year}/{row[0]}",  # 日期 (加上年份)
+                        row[1],  # 成交股數
+                        row[2],  # 成交金額
+                        row[3],  # 開盤價
+                        row[4],  # 最高價
+                        row[5],  # 最低價
+                        row[6],  # 收盤價
+                        row[7],  # 漲跌價差
+                        row[8]   # 成交筆數
+                    ])
+                except Exception as e:
+                    print(f"Error converting row {row}: {e}")
+                    continue
+            
+            return converted_data
+            
         except requests.exceptions.RequestException as e:
-            print(f"Request failed: {e}")
+            print(f"TPEx request failed: {e}")
+            print(f"URL: {url}")
+            print(f"Params: {params}")
             return None
 
     def get_last_update_date(self):
@@ -73,7 +148,6 @@ class StockDataFetcher:
 
     def update_stock_data(self):
         """下載並更新股票資料"""
-        # 檢查資料庫中最後更新日期
         last_update = self.get_last_update_date()
         if last_update:
             start_date = last_update + timedelta(days=1)
@@ -85,24 +159,24 @@ class StockDataFetcher:
         current_date = start_date
         
         while current_date <= self.end_date:
-            # 取得當月第一天
             first_day = current_date.replace(day=1)
             date_str = first_day.strftime('%Y%m%d')
             print(f"Fetching data for {self.stock_no} - {date_str}")
             
-            # 下載該月資料
-            monthly_data = self.fetch_twse_data(date_str)
-            if monthly_data:
-                try:
-                    self.insert_data(monthly_data)
-                    print(f"Successfully inserted data for {self.stock_no} - {date_str}")
-                except Exception as e:
-                    print(f"Error inserting data: {e}")
+            try:
+                monthly_data = self.fetch_stock_data(date_str)
+                if monthly_data:
+                    try:
+                        self.insert_data(monthly_data)
+                        print(f"Successfully inserted data for {self.stock_no} - {date_str}")
+                    except Exception as e:
+                        print(f"Error inserting data: {e}")
+                else:
+                    print(f"No data available for {self.stock_no} in {date_str}")
+            except Exception as e:
+                print(f"Error fetching data: {e}")
             
-            # 等待 3 秒避免被 ban
-            time.sleep(3)
-            
-            # 移到下個月
+            time.sleep(3)  # 避免請求過於頻繁
             current_date = (first_day + timedelta(days=32)).replace(day=1)
 
     def disconnect_db(self):
