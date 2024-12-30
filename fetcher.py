@@ -3,6 +3,34 @@ import pandas as pd
 import requests
 import time
 from datetime import datetime, timedelta
+import os
+
+class SQLLoader:
+    @staticmethod
+    def load_query(filename):
+        # 獲取當前文件（fetcher.py）所在目錄的上層目錄
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        file_path = os.path.join(base_dir, 'stock', 'sql', 'queries', filename)
+        
+        try:
+            with open(file_path, 'r') as f:
+                # Split the file content by -- and get non-empty queries
+                queries = [q.strip() for q in f.read().split('--') if q.strip()]
+                # Create a dictionary of queries if there are multiple queries in the file
+                if len(queries) > 1:
+                    # The first line of each query is the query name
+                    return {q.split('\n')[0].strip(): '\n'.join(q.split('\n')[1:]).strip() 
+                           for q in queries}
+                return queries[0]
+        except FileNotFoundError:
+            # 如果找不到文件，嘗試不同的路徑
+            alternative_path = os.path.join(base_dir, 'sql', 'queries', filename)
+            with open(alternative_path, 'r') as f:
+                queries = [q.strip() for q in f.read().split('--') if q.strip()]
+                if len(queries) > 1:
+                    return {q.split('\n')[0].strip(): '\n'.join(q.split('\n')[1:]).strip() 
+                           for q in queries}
+                return queries[0]
 
 class StockDataFetcher:
     def __init__(self, db_config, stock_no, start_date, end_date):
@@ -13,6 +41,17 @@ class StockDataFetcher:
         self.db_connection = None
         self.twse_url = "https://www.twse.com.tw/exchangeReport/STOCK_DAY"
         self.tpex_url = "https://www.tpex.org.tw/web/stock/aftertrading/daily_trading_info/st43_result.php"
+        
+        # Load SQL queries
+        try:
+            self.queries = {
+                'basic': SQLLoader.load_query('basic.sql'),
+                'monthly': SQLLoader.load_query('monthly.sql'),
+                'weekly': SQLLoader.load_query('weekly.sql')
+            }
+        except Exception as e:
+            print(f"Error loading SQL queries: {e}")
+            raise
 
     def connect_db(self):
         try:
@@ -20,15 +59,29 @@ class StockDataFetcher:
             print("Successfully connected to the database!")
             
             # Create database and table if not exists
-            with open('stock.sql', 'r') as sql_file:
-                cursor = self.db_connection.cursor()
-                # Split SQL commands and execute them separately
-                sql_commands = sql_file.read().split(';')
-                for command in sql_commands:
-                    if command.strip():
-                        cursor.execute(command)
-                self.db_connection.commit()
-                cursor.close()
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            schema_path = os.path.join(base_dir, 'stock', 'sql', 'schema.sql')
+            
+            try:
+                with open(schema_path, 'r') as sql_file:
+                    cursor = self.db_connection.cursor()
+                    sql_commands = sql_file.read().split(';')
+                    for command in sql_commands:
+                        if command.strip():
+                            cursor.execute(command)
+                    self.db_connection.commit()
+                    cursor.close()
+            except FileNotFoundError:
+                # 嘗試替代路徑
+                schema_path = os.path.join(base_dir, 'sql', 'schema.sql')
+                with open(schema_path, 'r') as sql_file:
+                    cursor = self.db_connection.cursor()
+                    sql_commands = sql_file.read().split(';')
+                    for command in sql_commands:
+                        if command.strip():
+                            cursor.execute(command)
+                    self.db_connection.commit()
+                    cursor.close()
                 
         except mysql.connector.Error as err:
             print(f"Error: {err}")
@@ -238,78 +291,17 @@ class StockDataFetcher:
         return df
 
     def get_aggregated_data_from_db(self, period='D'):
-        """
-        Get aggregated data from database
-        period: 'D' for daily, 'W' for weekly, 'M' for monthly
-        """
         cursor = self.db_connection.cursor(dictionary=True)
         
         if period == 'D':
-            # Original daily data query
-            cursor.execute("""
-                SELECT date, open_price, high_price, low_price, close_price, volume 
-                FROM stock_prices 
-                WHERE stock_no = %s
-                ORDER BY date
-            """, (self.stock_no,))
-        else:
-            # Aggregated query for weekly or monthly data
-            if period == 'M':
-                # Monthly aggregation
-                cursor.execute("""
-                    WITH monthly_data AS (
-                        SELECT 
-                            DATE_FORMAT(date, '%Y-%m-01') as month_start,
-                            MIN(date) as first_date,
-                            MAX(date) as last_date,
-                            MAX(high_price) as high_price,
-                            MIN(low_price) as low_price,
-                            SUM(volume) as volume
-                        FROM stock_prices 
-                        WHERE stock_no = %s
-                        GROUP BY DATE_FORMAT(date, '%Y-%m-01')
-                    )
-                    SELECT 
-                        md.month_start as date,
-                        sp1.open_price,
-                        md.high_price,
-                        md.low_price,
-                        sp2.close_price,
-                        md.volume
-                    FROM monthly_data md
-                    JOIN stock_prices sp1 ON sp1.date = md.first_date
-                    JOIN stock_prices sp2 ON sp2.date = md.last_date
-                    WHERE sp1.stock_no = %s AND sp2.stock_no = %s
-                    ORDER BY md.month_start
-                """, (self.stock_no, self.stock_no, self.stock_no))
-            else:
-                # Weekly aggregation
-                cursor.execute("""
-                    WITH weekly_data AS (
-                        SELECT 
-                            DATE(date - INTERVAL WEEKDAY(date) DAY) as week_start,
-                            MIN(date) as first_date,
-                            MAX(date) as last_date,
-                            MAX(high_price) as high_price,
-                            MIN(low_price) as low_price,
-                            SUM(volume) as volume
-                        FROM stock_prices 
-                        WHERE stock_no = %s
-                        GROUP BY YEARWEEK(date)
-                    )
-                    SELECT 
-                        wd.week_start as date,
-                        sp1.open_price,
-                        wd.high_price,
-                        wd.low_price,
-                        sp2.close_price,
-                        wd.volume
-                    FROM weekly_data wd
-                    JOIN stock_prices sp1 ON sp1.date = wd.first_date
-                    JOIN stock_prices sp2 ON sp2.date = wd.last_date
-                    WHERE sp1.stock_no = %s AND sp2.stock_no = %s
-                    ORDER BY wd.week_start
-                """, (self.stock_no, self.stock_no, self.stock_no))
+            cursor.execute(self.queries['basic']['Get daily data'], 
+                         (self.stock_no,))
+        elif period == 'M':
+            cursor.execute(self.queries['monthly'], 
+                         (self.stock_no, self.stock_no, self.stock_no))
+        else:  # Weekly
+            cursor.execute(self.queries['weekly'], 
+                         (self.stock_no, self.stock_no, self.stock_no, self.stock_no))
         
         data = cursor.fetchall()
         cursor.close()

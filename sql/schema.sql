@@ -15,4 +15,4 @@ CREATE TABLE IF NOT EXISTS stock_prices (
     transaction_count INT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY stock_date (stock_no, date)
-);
+); 

@@ -73,11 +73,14 @@ def update_worker(stock_no: str, db_config, debug_mode=False):
             print(f"Error message: {e.msg}")
         
         fetcher.disconnect_db()
+        print()  # 添加一個空行
+        sys.stdout.flush()
     except Exception as e:
         print(f"Error updating stock {stock_no}: {e}")
         import traceback
         print("Traceback:")
         traceback.print_exc()
+        sys.stdout.flush()
 
 def plot_worker(stock_no, start_date, end_date, db_config, period='D'):
     """
@@ -94,8 +97,10 @@ def plot_worker(stock_no, start_date, end_date, db_config, period='D'):
         plotter = StockDataPlotter()
         plotter.plot_kline_with_volume(data, start_date, end_date, 
                                      title=f'{period_text} K-Line Chart - {stock_no}')
+        sys.stdout.flush()
     except Exception as e:
         print(f"Error plotting stock {stock_no}: {e}")
+        sys.stdout.flush()
 
 def analyze_worker(stock_no, start_date, end_date, db_config, period='D'):
     """
@@ -128,8 +133,11 @@ def analyze_worker(stock_no, start_date, end_date, db_config, period='D'):
             resistance=analysis_result['resistance'],
             title=f'{period_text} K-Line Chart with Analysis - {stock_no}'
         )
+        print()  # 添加一個空行
+        sys.stdout.flush()
     except Exception as e:
         print(f"Error analyzing stock {stock_no}: {e}")
+        sys.stdout.flush()
 
 def list_worker(db_config, stock_no=None, start_date=None, end_date=None, period='D'):
     """
@@ -221,11 +229,14 @@ def list_worker(db_config, stock_no=None, start_date=None, end_date=None, period
             cursor.close()
             
         fetcher.disconnect_db()
+        print()  # 添加一個空行
+        sys.stdout.flush()
             
     except Exception as e:
         print(f"Error listing stocks: {e}")
         import traceback
         traceback.print_exc()
+        sys.stdout.flush()
 
 class StockApp:
     def __init__(self):
@@ -284,7 +295,7 @@ class StockApp:
     def update_stock(self, stock_no):
         process = multiprocessing.Process(
             target=update_worker,
-            args=(stock_no, self.db_config, self.debug_mode)  # 傳遞 debug 模式
+            args=(stock_no, self.db_config, self.debug_mode)
         )
         self.processes.append(process)
         process.start()
@@ -294,7 +305,7 @@ class StockApp:
             'start_time': datetime.now(),
             'status': 'running'
         }
-        print(f"Started update process for stock {stock_no} (PID: {process.pid})")
+        print(f"Started update process (PID: {process.pid})")
 
     def check_processes(self):
         """檢查所有進程的狀態並更新資訊"""
@@ -326,7 +337,13 @@ class StockApp:
         )
         self.processes.append(process)
         process.start()
-        print(f"Started plotting process for stock {stock_no}")
+        self.process_info[process.pid] = {
+            'type': 'plot',
+            'stock_no': stock_no,
+            'start_time': datetime.now(),
+            'status': 'running'
+        }
+        print(f"Started plotting process (PID: {process.pid})")
 
     def analyze_stock(self, stock_no, start_date=None, end_date=None, period='D'):
         process = multiprocessing.Process(
@@ -335,7 +352,13 @@ class StockApp:
         )
         self.processes.append(process)
         process.start()
-        print(f"Started analysis process for stock {stock_no}")
+        self.process_info[process.pid] = {
+            'type': 'analyze',
+            'stock_no': stock_no,
+            'start_time': datetime.now(),
+            'status': 'running'
+        }
+        print(f"Started analysis process (PID: {process.pid})")
 
     def parse_date(self, date_str):
         if date_str:
@@ -361,6 +384,9 @@ class StockApp:
 
         while True:
             try:
+                # Check process status before showing prompt
+                self.check_processes()
+                
                 command = input("\n> ").strip()
                 if command:
                     readline.add_history(command)
@@ -451,4 +477,10 @@ class StockApp:
         )
         self.processes.append(process)
         process.start()
-        print("Started listing process")
+        self.process_info[process.pid] = {
+            'type': 'list',
+            'stock_no': stock_no or 'all',
+            'start_time': datetime.now(),
+            'status': 'running'
+        }
+        print(f"Started listing process (PID: {process.pid})")
