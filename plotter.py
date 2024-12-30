@@ -3,7 +3,7 @@ import mplfinance as mpf
 
 class StockDataPlotter:
     @staticmethod
-    def plot_kline_with_volume(data, start_date=None, end_date=None, support=None, resistance=None):
+    def plot_kline_with_volume(data, start_date=None, end_date=None, support=None, resistance=None, title=None):
         # Ensure the data format is correct
         data['date'] = pd.to_datetime(data['date'])
         data.set_index('date', inplace=True)
@@ -32,5 +32,7 @@ class StockDataPlotter:
             ap.append(mpf.make_addplot([float(resistance)] * len(data), color='red', linestyle='--', width=1))  # Convert to float
 
         # Plot the K-line chart with volume
-        mpf.plot(data, type='candle', volume=True, title='K-Line and Volume with Support/Resistance',
-                 style='charles', ylabel='Price', ylabel_lower='Volume', addplot=ap)
+        mpf.plot(data, type='candle', volume=True, 
+                 title=title or 'K-Line and Volume with Support/Resistance',
+                 style='charles', ylabel='Price', ylabel_lower='Volume', 
+                 addplot=ap)

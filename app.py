@@ -8,9 +8,12 @@ from analyzer import StockPatternAnalyzer
 from plotter import StockDataPlotter
 import mysql.connector
 import platform
+import pandas as pd
 
 def update_worker(stock_no: str, db_config, debug_mode=False):
-    """Worker for updating stock data"""
+    """
+    Worker for updating stock data
+    """
     def log(message):
         if debug_mode:
             print(message)
@@ -76,30 +79,40 @@ def update_worker(stock_no: str, db_config, debug_mode=False):
         print("Traceback:")
         traceback.print_exc()
 
-def plot_worker(stock_no, start_date, end_date, db_config):
-    """Worker for plotting stock charts"""
+def plot_worker(stock_no, start_date, end_date, db_config, period='D'):
+    """
+    Worker for plotting stock charts
+    period: 'D' for daily, 'W' for weekly, 'M' for monthly
+    """
     try:
         fetcher = StockDataFetcher(db_config, stock_no, start_date, end_date)
         fetcher.connect_db()
-        data = fetcher.get_data_from_db()
+        data = fetcher.get_aggregated_data_from_db(period)
         fetcher.disconnect_db()
 
+        period_text = {'D': 'Daily', 'W': 'Weekly', 'M': 'Monthly'}[period]
         plotter = StockDataPlotter()
-        plotter.plot_kline_with_volume(data, start_date, end_date)
+        plotter.plot_kline_with_volume(data, start_date, end_date, 
+                                     title=f'{period_text} K-Line Chart - {stock_no}')
     except Exception as e:
         print(f"Error plotting stock {stock_no}: {e}")
 
-def analyze_worker(stock_no, start_date, end_date, db_config):
-    """Worker for analyzing stock patterns"""
+def analyze_worker(stock_no, start_date, end_date, db_config, period='D'):
+    """
+    Worker for analyzing stock patterns
+    period: 'D' for daily, 'W' for weekly, 'M' for monthly
+    """
     try:
         fetcher = StockDataFetcher(db_config, stock_no, start_date, end_date)
         fetcher.connect_db()
-        data = fetcher.get_data_from_db()
+        data = fetcher.get_aggregated_data_from_db(period)
         fetcher.disconnect_db()
+
+        period_text = {'D': 'Daily', 'W': 'Weekly', 'M': 'Monthly'}[period]
+        print(f"\n{period_text} Analysis result for {stock_no}:")
 
         analyzer = StockPatternAnalyzer(data, start_date, end_date)
         analysis_result = analyzer.analyze()
-        print(f"\nAnalysis result for {stock_no}:")
         print(f"Support: {analysis_result['support']}")
         print(f"Resistance: {analysis_result['resistance']}")
         print(f"Is consolidation: {analysis_result['is_consolidation']}")
@@ -108,71 +121,80 @@ def analyze_worker(stock_no, start_date, end_date, db_config):
         print(f"Is breakout: {analysis_result['is_breakout']}")
         print(f"Is breakdown: {analysis_result['is_breakdown']}")
 
-        # Plot with analysis results
         plotter = StockDataPlotter()
         plotter.plot_kline_with_volume(
             data, start_date, end_date,
             support=analysis_result['support'],
-            resistance=analysis_result['resistance']
+            resistance=analysis_result['resistance'],
+            title=f'{period_text} K-Line Chart with Analysis - {stock_no}'
         )
     except Exception as e:
         print(f"Error analyzing stock {stock_no}: {e}")
 
-def list_worker(db_config, stock_no=None):
-    """Worker for listing stock data summary"""
+def list_worker(db_config, stock_no=None, start_date=None, end_date=None, period='D'):
+    """
+    Worker for listing stock data summary
+    period: 'D' for daily, 'W' for weekly, 'M' for monthly
+    """
     try:
         fetcher = StockDataFetcher(db_config, stock_no or "", None, None)
         fetcher.connect_db()
-        cursor = fetcher.db_connection.cursor()
         
         if stock_no:
-            # Show detailed data for specific stock
-            cursor.execute("""
-                SELECT date, 
-                       volume,
-                       turnover,
-                       open_price,
-                       high_price,
-                       low_price,
-                       close_price,
-                       transaction_count
-                FROM stock_prices 
-                WHERE stock_no = %s
-                ORDER BY date DESC
-                LIMIT 10
-            """, (stock_no,))
+            # Get aggregated data using the new method
+            data = fetcher.get_aggregated_data_from_db(period)
             
-            results = cursor.fetchall()
-            if not results:
+            # Filter by date range if provided
+            if start_date:
+                data = data[data['date'] >= pd.to_datetime(start_date)]
+            if end_date:
+                data = data[data['date'] <= pd.to_datetime(end_date)]
+            
+            if data.empty:
                 print(f"\nNo data found for stock {stock_no}")
                 return
-                
-            print(f"\nLatest 10 records for stock {stock_no}:")
-            print("Date       | Volume    | Open  | High  | Low   | Close | Trans")
-            print("-" * 70)
-            for row in results:
-                print(f"{row[0]} | {row[1]:9d} | {row[3]:5.2f} | {row[4]:5.2f} | {row[5]:5.2f} | {row[6]:5.2f} | {row[7]:6d}")
             
-            # Show statistics
-            cursor.execute("""
-                SELECT MIN(date) as first_date,
-                       MAX(date) as last_date,
-                       COUNT(*) as total_records,
-                       MIN(close_price) as min_price,
-                       MAX(close_price) as max_price,
-                       AVG(close_price) as avg_price
-                FROM stock_prices
-                WHERE stock_no = %s
-            """, (stock_no,))
+            # Display header
+            period_text = {'D': 'Daily', 'W': 'Weekly', 'M': 'Monthly'}[period]
+            print(f"\n{period_text} Trading Records for Stock {stock_no}:")
+            if start_date and end_date:
+                print(f"Period: {start_date} to {end_date}")
+            else:
+                print("Latest records:")
             
-            stats = cursor.fetchone()
-            print(f"\nStatistics for {stock_no}:")
-            print(f"Date range: {stats[0]} to {stats[1]}")
-            print(f"Total records: {stats[2]}")
-            print(f"Price range: {stats[3]:.2f} - {stats[4]:.2f} (avg: {stats[5]:.2f})")
+            # Display data table
+            print("\nDate       | Volume      | Open  | High  | Low   | Close")
+            print("-" * 65)
+            
+            # Sort by date in descending order and limit to 10 if no date range
+            data = data.sort_values('date', ascending=False)
+            if not (start_date and end_date):
+                data = data.head(10)
+            
+            # Display records with appropriate date format
+            date_format = '%Y-%m' if period == 'M' else '%Y-%m-%d'
+            for _, row in data.iterrows():
+                date_str = row['date'].strftime(date_format)
+                # Add padding for monthly format to align with header
+                if period == 'M':
+                    date_str = f"{date_str}    "
+                print(f"{date_str} | {row['volume']:11,.0f} | "
+                      f"{float(row['open_price']):5.2f} | {float(row['high_price']):5.2f} | "
+                      f"{float(row['low_price']):5.2f} | {float(row['close_price']):5.2f}")
+            
+            # Display summary statistics
+            print(f"\n{period_text} Summary Statistics:")
+            print("-" * 40)
+            
+            print(f"Total {period_text} Periods: {len(data)}")
+            print(f"Price Range: {float(data['low_price'].min()):.2f} - {float(data['high_price'].max()):.2f}")
+            print(f"Average Closing Price: {float(data['close_price'].mean()):.2f}")
+            print(f"Total Volume: {data['volume'].sum():,.0f}")
+            print(f"Average {period_text} Volume: {data['volume'].mean():,.0f}")
             
         else:
-            # Show summary for all stocks
+            # Show summary for all stocks (unchanged)
+            cursor = fetcher.db_connection.cursor()
             cursor.execute("""
                 SELECT stock_no, 
                        MIN(date) as first_date, 
@@ -196,7 +218,8 @@ def list_worker(db_config, stock_no=None):
             for row in results:
                 print(f"{row[0]:<8} | {row[1]} | {row[2]} | {row[3]:>7} | {row[4]:6.2f} - {row[5]:6.2f}")
             
-        cursor.close()
+            cursor.close()
+            
         fetcher.disconnect_db()
             
     except Exception as e:
@@ -212,12 +235,12 @@ class StockApp:
             "password": "",
             "database": "stock_data"
         }
-        self.processes = []  # 追踪所有子進程
-        self.process_info = {}  # 儲存進程資訊
-        self.debug_mode = False  # debug 模式開關
+        self.processes = []
+        self.process_info = {}
+        self.debug_mode = False # debug mode is closed by default
         signal.signal(signal.SIGINT, self.signal_handler)
         
-        # 設置命令歷史
+        # Command history, like the
         self.history_file = ".stock_app_history"
         try:
             readline.read_history_file(self.history_file)
@@ -296,19 +319,19 @@ class StockApp:
             start_time = info['start_time'].strftime('%Y-%m-%d %H:%M:%S')
             print(f"{pid:<8} | {info['type']:<8} | {info['stock_no']:<5} | {start_time} | {info['status']}")
 
-    def plot_stock(self, stock_no, start_date=None, end_date=None):
+    def plot_stock(self, stock_no, start_date=None, end_date=None, period='D'):
         process = multiprocessing.Process(
             target=plot_worker,
-            args=(stock_no, start_date, end_date, self.db_config)
+            args=(stock_no, start_date, end_date, self.db_config, period)
         )
         self.processes.append(process)
         process.start()
         print(f"Started plotting process for stock {stock_no}")
 
-    def analyze_stock(self, stock_no, start_date=None, end_date=None):
+    def analyze_stock(self, stock_no, start_date=None, end_date=None, period='D'):
         process = multiprocessing.Process(
             target=analyze_worker,
-            args=(stock_no, start_date, end_date, self.db_config)
+            args=(stock_no, start_date, end_date, self.db_config, period)
         )
         self.processes.append(process)
         process.start()
@@ -329,7 +352,7 @@ class StockApp:
         print(" - update <stock_number>")
         print(" - plot <stock_number> [start_date] [end_date]")
         print(" - analyze <stock_number> [start_date] [end_date]")
-        print(" - list [stock_number]")
+        print(" - list [stock_number] [start_date] [end_date]")
         print(" - debug on|off")
         print(" - status")
         print(" - exit")
@@ -367,35 +390,53 @@ class StockApp:
                         continue
                     self.update_stock(command[1])
 
-                elif command[0] == "plot":
-                    if len(command) < 2 or len(command) > 4:
-                        print("Usage: plot <stock_number> [start_date] [end_date]")
-                        continue
-                    start_date = self.parse_date(command[2]) if len(command) > 2 else None
-                    end_date = self.parse_date(command[3]) if len(command) > 3 else None
-                    self.plot_stock(command[1], start_date, end_date)
+                elif command[0] in ["plot", "analyze"]:
+                    # Extract period flag if present
+                    period = 'D'  # default daily
+                    if '-m' in command:
+                        period = 'M'
+                        command.remove('-m')
+                    elif '-w' in command:
+                        period = 'W'
+                        command.remove('-w')
 
-                elif command[0] == "analyze":
                     if len(command) < 2 or len(command) > 4:
-                        print("Usage: analyze <stock_number> [start_date] [end_date]")
+                        print(f"Usage: {command[0]} <stock_number> [start_date] [end_date] [-m|-w]")
                         continue
+
                     start_date = self.parse_date(command[2]) if len(command) > 2 else None
                     end_date = self.parse_date(command[3]) if len(command) > 3 else None
-                    self.analyze_stock(command[1], start_date, end_date)
+                    
+                    if command[0] == "plot":
+                        self.plot_stock(command[1], start_date, end_date, period)
+                    else:  # analyze
+                        self.analyze_stock(command[1], start_date, end_date, period)
 
                 elif command[0] == "list":
-                    if len(command) > 2:
-                        print("Usage: list [stock_number]")
+                    # Extract period flag if present
+                    period = 'D'  # default daily
+                    if '-m' in command:
+                        period = 'M'
+                        command.remove('-m')
+                    elif '-w' in command:
+                        period = 'W'
+                        command.remove('-w')
+
+                    if len(command) > 4:
+                        print("Usage: list [stock_number] [start_date] [end_date] [-m|-w]")
                         continue
-                    stock_no = command[1] if len(command) == 2 else None
-                    self.list_stocks(stock_no)
+                        
+                    stock_no = command[1] if len(command) > 1 else None
+                    start_date = self.parse_date(command[2]) if len(command) > 2 else None
+                    end_date = self.parse_date(command[3]) if len(command) > 3 else None
+                    self.list_stocks(stock_no, start_date, end_date, period)
 
                 else:
                     print("Unknown command. Available commands:")
                     print("  update <stock_number>")
                     print("  plot <stock_number> [start_date] [end_date]")
                     print("  analyze <stock_number> [start_date] [end_date]")
-                    print("  list")
+                    print("  list [stock_number] [start_date] [end_date]")
                     print("  debug on|off")
                     print("  status")
                     print("  exit")
@@ -403,10 +444,10 @@ class StockApp:
             except Exception as e:
                 print(f"Error: {e}")
 
-    def list_stocks(self, stock_no=None):
+    def list_stocks(self, stock_no=None, start_date=None, end_date=None, period='D'):
         process = multiprocessing.Process(
             target=list_worker,
-            args=(self.db_config, stock_no)
+            args=(self.db_config, stock_no, start_date, end_date, period)
         )
         self.processes.append(process)
         process.start()

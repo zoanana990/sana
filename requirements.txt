@@ -1,4 +1,5 @@
 mysql-connector-python
-requests
 pandas
 mplfinance
+requests
+pyreadline3

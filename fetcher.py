@@ -3,7 +3,6 @@ import pandas as pd
 import requests
 import time
 from datetime import datetime, timedelta
-import json
 
 class StockDataFetcher:
     def __init__(self, db_config, stock_no, start_date, end_date):
@@ -236,4 +235,85 @@ class StockDataFetcher:
         df = pd.DataFrame(data)
         # Ensure 'date' is in datetime format
         df['date'] = pd.to_datetime(df['date'])
+        return df
+
+    def get_aggregated_data_from_db(self, period='D'):
+        """
+        Get aggregated data from database
+        period: 'D' for daily, 'W' for weekly, 'M' for monthly
+        """
+        cursor = self.db_connection.cursor(dictionary=True)
+        
+        if period == 'D':
+            # Original daily data query
+            cursor.execute("""
+                SELECT date, open_price, high_price, low_price, close_price, volume 
+                FROM stock_prices 
+                WHERE stock_no = %s
+                ORDER BY date
+            """, (self.stock_no,))
+        else:
+            # Aggregated query for weekly or monthly data
+            if period == 'M':
+                # Monthly aggregation
+                cursor.execute("""
+                    WITH monthly_data AS (
+                        SELECT 
+                            DATE_FORMAT(date, '%Y-%m-01') as month_start,
+                            MIN(date) as first_date,
+                            MAX(date) as last_date,
+                            MAX(high_price) as high_price,
+                            MIN(low_price) as low_price,
+                            SUM(volume) as volume
+                        FROM stock_prices 
+                        WHERE stock_no = %s
+                        GROUP BY DATE_FORMAT(date, '%Y-%m-01')
+                    )
+                    SELECT 
+                        md.month_start as date,
+                        sp1.open_price,
+                        md.high_price,
+                        md.low_price,
+                        sp2.close_price,
+                        md.volume
+                    FROM monthly_data md
+                    JOIN stock_prices sp1 ON sp1.date = md.first_date
+                    JOIN stock_prices sp2 ON sp2.date = md.last_date
+                    WHERE sp1.stock_no = %s AND sp2.stock_no = %s
+                    ORDER BY md.month_start
+                """, (self.stock_no, self.stock_no, self.stock_no))
+            else:
+                # Weekly aggregation
+                cursor.execute("""
+                    WITH weekly_data AS (
+                        SELECT 
+                            DATE(date - INTERVAL WEEKDAY(date) DAY) as week_start,
+                            MIN(date) as first_date,
+                            MAX(date) as last_date,
+                            MAX(high_price) as high_price,
+                            MIN(low_price) as low_price,
+                            SUM(volume) as volume
+                        FROM stock_prices 
+                        WHERE stock_no = %s
+                        GROUP BY YEARWEEK(date)
+                    )
+                    SELECT 
+                        wd.week_start as date,
+                        sp1.open_price,
+                        wd.high_price,
+                        wd.low_price,
+                        sp2.close_price,
+                        wd.volume
+                    FROM weekly_data wd
+                    JOIN stock_prices sp1 ON sp1.date = wd.first_date
+                    JOIN stock_prices sp2 ON sp2.date = wd.last_date
+                    WHERE sp1.stock_no = %s AND sp2.stock_no = %s
+                    ORDER BY wd.week_start
+                """, (self.stock_no, self.stock_no, self.stock_no))
+        
+        data = cursor.fetchall()
+        cursor.close()
+        df = pd.DataFrame(data)
+        if not df.empty:
+            df['date'] = pd.to_datetime(df['date'])
         return df
