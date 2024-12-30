@@ -125,7 +125,7 @@ def analyze_worker(stock_no, start_date, end_date, db_config, period='D'):
             resistance=analysis_result['resistance'],
             title=f'{period_text} K-Line Chart with Analysis - {stock_no}'
         )
-        print()  # 添加一個空行
+
         sys.stdout.flush()
     except Exception as e:
         print(f"Error analyzing stock {stock_no}: {e}")
@@ -211,7 +211,6 @@ def list_worker(db_config, stock_no=None, start_date=None, end_date=None, period
             cursor.close()
             
         fetcher.disconnect_db()
-        print()  # 添加一個空行
         sys.stdout.flush()
             
     except Exception as e:
