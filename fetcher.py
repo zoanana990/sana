@@ -39,13 +39,15 @@ class StockDataFetcher:
         self.db_connection = None
         self.twse_url = "https://www.twse.com.tw/exchangeReport/STOCK_DAY"
         self.tpex_url = "https://www.tpex.org.tw/web/stock/aftertrading/daily_trading_info/st43_result.php"
+        self.mops_url = "https://mops.twse.com.tw/mops/web/t05st10_ifrs"  # 營收資料的URL
         
         # Load SQL queries
         try:
             self.queries = {
                 'basic': SQLLoader.load_query('basic.sql'),
                 'monthly': SQLLoader.load_query('monthly.sql'),
-                'weekly': SQLLoader.load_query('weekly.sql')
+                'weekly': SQLLoader.load_query('weekly.sql'),
+                'income': SQLLoader.load_query('income.sql')
             }
         except Exception as e:
             print(f"Error loading SQL queries: {e}")
@@ -159,8 +161,9 @@ class StockDataFetcher:
             print(f"Starting fresh download from: {start_date}")
 
         current_date = start_date
+        end_date = self.end_date.date() if isinstance(self.end_date, datetime) else self.end_date
         
-        while current_date <= self.end_date:
+        while current_date <= end_date:
             first_day = current_date.replace(day=1)
             date_str = first_day.strftime('%Y%m%d')
             print(f"Fetching data for {self.stock_no} - {date_str}")
@@ -243,6 +246,51 @@ class StockDataFetcher:
             cursor.execute(self.queries['weekly'], 
                          (self.stock_no, self.stock_no, self.stock_no, self.stock_no))
         
+        data = cursor.fetchall()
+        cursor.close()
+        df = pd.DataFrame(data)
+        if not df.empty:
+            df['date'] = pd.to_datetime(df['date'])
+        return df
+
+    # FIXME: data source does not exist
+    def fetch_income_data(self, year, month):
+        return None
+
+    # FIXME: the data source have no data
+    def update_income_data(self):
+        """
+        update the income data
+        """
+        print("Data source have no data, not supported currently")
+        return None
+
+    def get_last_income_update(self):
+        """
+        get the last income data update
+        """
+        cursor = self.db_connection.cursor()
+        cursor.execute(self.queries['income']['Get last income update'], (self.stock_no,))
+        last_date = cursor.fetchone()[0]
+        cursor.close()
+        return last_date
+
+    def insert_income_data(self, data):
+        """
+        insert the income data into the database
+        """
+        cursor = self.db_connection.cursor()
+        cursor.execute(self.queries['income']['Insert or update income data'],
+                      (self.stock_no, data['date'], data['revenue'], data['profit']))
+        self.db_connection.commit()
+        cursor.close()
+
+    def get_income_data_from_db(self):
+        """
+        Fetch the data from database
+        """
+        cursor = self.db_connection.cursor(dictionary=True)
+        cursor.execute(self.queries['income']['Get monthly income data'], (self.stock_no,))
         data = cursor.fetchall()
         cursor.close()
         df = pd.DataFrame(data)

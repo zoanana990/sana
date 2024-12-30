@@ -15,4 +15,14 @@ CREATE TABLE IF NOT EXISTS stock_prices (
     transaction_count INT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY stock_date (stock_no, date)
+);
+
+CREATE TABLE IF NOT EXISTS stock_income (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    stock_no VARCHAR(10) NOT NULL,
+    date DATE NOT NULL,
+    revenue BIGINT,           -- revenue
+    profit BIGINT,            -- profit
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY stock_income_date (stock_no, date)
 ); 

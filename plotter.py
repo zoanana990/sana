@@ -1,5 +1,6 @@
 import pandas as pd
 import mplfinance as mpf
+import matplotlib.pyplot as plt
 
 class StockDataPlotter:
     @staticmethod
@@ -36,3 +37,30 @@ class StockDataPlotter:
                  title=title or 'K-Line and Volume with Support/Resistance',
                  style='charles', ylabel='Price', ylabel_lower='Volume', 
                  addplot=ap)
+
+    def plot_income_chart(self, data, start_date=None, end_date=None, title=None):
+        """
+        Plot income and profit chart
+        """
+        plt.figure(figsize=(15, 8))
+        
+        # Plot revenue
+        plt.subplot(2, 1, 1)
+        plt.plot(data['date'], data['revenue'], label='Revenue', color='blue')
+        plt.title(title or 'Monthly Revenue')
+        plt.xlabel('Date')
+        plt.ylabel('Revenue')
+        plt.grid(True)
+        plt.legend()
+
+        # Plot profit
+        plt.subplot(2, 1, 2)
+        plt.plot(data['date'], data['profit'], label='Profit', color='green')
+        plt.title('Monthly Profit')
+        plt.xlabel('Date')
+        plt.ylabel('Profit')
+        plt.grid(True)
+        plt.legend()
+
+        plt.tight_layout()
+        plt.show()

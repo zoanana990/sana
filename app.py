@@ -9,8 +9,9 @@ from plotter import StockDataPlotter
 import mysql.connector
 import platform
 import pandas as pd
+import traceback
 
-def update_worker(stock_no: str, db_config, debug_mode=False):
+def update_worker(stock_no: str, db_config, debug_mode=False, include_income=False):
     """
     Worker for updating stock data
     """
@@ -24,8 +25,8 @@ def update_worker(stock_no: str, db_config, debug_mode=False):
         fetcher = StockDataFetcher(db_config, stock_no, start_date, end_date)
         fetcher.connect_db()
 
+        # 更新價格資料
         try:
-            # Check if stock data exists in database
             cursor = fetcher.db_connection.cursor()
             cursor.execute(fetcher.queries['basic']['Check stock exists'], (stock_no,))
             count = cursor.fetchone()[0]
@@ -33,62 +34,77 @@ def update_worker(stock_no: str, db_config, debug_mode=False):
 
             if count == 0:
                 log(f"No data found for stock {stock_no}, fetching from TWSE...")
-                try:
-                    fetcher.update_stock_data(debug_mode)
-                    log(f"Successfully downloaded data for stock {stock_no}")
-                except Exception as e:
-                    log(f"Failed to fetch data from TWSE: {e}")
-                    log("Response details: " + str(getattr(e, 'response', None)))
+                fetcher.update_stock_data()
             else:
-                # Check last update date
                 cursor = fetcher.db_connection.cursor()
                 cursor.execute(fetcher.queries['basic']['Get last update date for stock'], (stock_no,))
                 last_update = cursor.fetchone()[0]
                 cursor.close()
 
-                if last_update:
-                    # Update data if last update is not today
-                    if last_update.date() < datetime.now().date():
-                        print(f"Updating data for stock {stock_no} from {last_update.date()}")
-                        fetcher.start_date = last_update + timedelta(days=1)
-                        fetcher.update_stock_data()
-                    else:
-                        print(f"Data for stock {stock_no} is already up to date")
-                else:
-                    print(f"Updating all data for stock {stock_no}")
+                current_date = datetime.now().date()
+                if last_update and last_update < current_date:
+                    print(f"Updating price data for stock {stock_no} from {last_update}")
+                    fetcher.start_date = datetime.combine(last_update, datetime.min.time()) + timedelta(days=1)
                     fetcher.update_stock_data()
 
         except mysql.connector.Error as e:
             print(f"Database error: {e}")
-            print(f"Error code: {e.errno}")
-            print(f"SQLSTATE: {e.sqlstate}")
-            print(f"Error message: {e.msg}")
+
+        if include_income:
+            try:
+                cursor = fetcher.db_connection.cursor()
+                cursor.execute(fetcher.queries['income']['Check income exists'], (stock_no,))
+                count = cursor.fetchone()[0]
+                cursor.close()
+
+                if count == 0:
+                    log(f"No income data found for stock {stock_no}, fetching from MOPS...")
+                    fetcher.update_income_data()
+                else:
+                    cursor = fetcher.db_connection.cursor()
+                    cursor.execute(fetcher.queries['income']['Get last income update'], (stock_no,))
+                    last_update = cursor.fetchone()[0]
+                    cursor.close()
+
+                    current_date = datetime.now().date()
+                    if last_update and last_update < current_date:
+                        print(f"Updating income data for stock {stock_no} from {last_update}")
+                        fetcher.start_date = datetime.combine(last_update, datetime.min.time()) + timedelta(days=1)
+                        fetcher.update_income_data()
+
+            except mysql.connector.Error as e:
+                print(f"Database error when updating income: {e}")
         
         fetcher.disconnect_db()
         print()
         sys.stdout.flush()
     except Exception as e:
         print(f"Error updating stock {stock_no}: {e}")
-        import traceback
-        print("Traceback:")
         traceback.print_exc()
         sys.stdout.flush()
 
-def plot_worker(stock_no, start_date, end_date, db_config, period='D'):
-    """
-    Worker for plotting stock charts
-    period: 'D' for daily, 'W' for weekly, 'M' for monthly
-    """
+def plot_worker(stock_no, start_date, end_date, db_config, period='D', plot_income=False):
     try:
         fetcher = StockDataFetcher(db_config, stock_no, start_date, end_date)
         fetcher.connect_db()
-        data = fetcher.get_aggregated_data_from_db(period)
+        
+        if plot_income:
+            data = fetcher.get_income_data_from_db()
+            if data.empty:
+                print(f"No income data found for stock {stock_no}")
+                return
+            
+            plotter = StockDataPlotter()
+            plotter.plot_income_chart(data, start_date, end_date,
+                                    title=f'Monthly Income Chart - {stock_no}')
+        else:
+            data = fetcher.get_aggregated_data_from_db(period)
+            period_text = {'D': 'Daily', 'W': 'Weekly', 'M': 'Monthly'}[period]
+            plotter = StockDataPlotter()
+            plotter.plot_kline_with_volume(data, start_date, end_date,
+                                         title=f'{period_text} K-Line Chart - {stock_no}')
+        
         fetcher.disconnect_db()
-
-        period_text = {'D': 'Daily', 'W': 'Weekly', 'M': 'Monthly'}[period]
-        plotter = StockDataPlotter()
-        plotter.plot_kline_with_volume(data, start_date, end_date, 
-                                     title=f'{period_text} K-Line Chart - {stock_no}')
         sys.stdout.flush()
     except Exception as e:
         print(f"Error plotting stock {stock_no}: {e}")
@@ -131,91 +147,133 @@ def analyze_worker(stock_no, start_date, end_date, db_config, period='D'):
         print(f"Error analyzing stock {stock_no}: {e}")
         sys.stdout.flush()
 
-def list_worker(db_config, stock_no=None, start_date=None, end_date=None, period='D'):
-    """
-    Worker for listing stock data summary
-    period: 'D' for daily, 'W' for weekly, 'M' for monthly
-    """
+def list_worker(db_config, stock_no=None, start_date=None, end_date=None, period='D', include_income=False):
     try:
         fetcher = StockDataFetcher(db_config, stock_no or "", None, None)
         fetcher.connect_db()
         
         if stock_no:
-            # Get aggregated data using the new method
-            data = fetcher.get_aggregated_data_from_db(period)
-            
-            # Filter by date range if provided
-            if start_date:
-                data = data[data['date'] >= pd.to_datetime(start_date)]
-            if end_date:
-                data = data[data['date'] <= pd.to_datetime(end_date)]
-            
-            if data.empty:
-                print(f"\nNo data found for stock {stock_no}")
-                return
-            
-            # Display header
-            period_text = {'D': 'Daily', 'W': 'Weekly', 'M': 'Monthly'}[period]
-            print(f"\n{period_text} Trading Records for Stock {stock_no}:")
-            if start_date and end_date:
-                print(f"Period: {start_date} to {end_date}")
-            else:
-                print("Latest records:")
-            
-            # Display data table
-            print("\nDate       | Volume      | Open  | High  | Low   | Close")
-            print("-" * 65)
-            
-            # Sort by date in descending order and limit to 10 if no date range
-            data = data.sort_values('date', ascending=False)
-            if not (start_date and end_date):
-                data = data.head(10)
-            
-            # Display records with appropriate date format
-            date_format = '%Y-%m' if period == 'M' else '%Y-%m-%d'
-            for _, row in data.iterrows():
-                date_str = row['date'].strftime(date_format)
-                # Add padding for monthly format to align with header
-                if period == 'M':
-                    date_str = f"{date_str}    "
-                print(f"{date_str} | {row['volume']:11,.0f} | "
-                      f"{float(row['open_price']):5.2f} | {float(row['high_price']):5.2f} | "
-                      f"{float(row['low_price']):5.2f} | {float(row['close_price']):5.2f}")
-            
-            # Display summary statistics
-            print(f"\n{period_text} Summary Statistics:")
-            print("-" * 40)
-            
-            print(f"Total {period_text} Periods: {len(data)}")
-            print(f"Price Range: {float(data['low_price'].min()):.2f} - {float(data['high_price'].max()):.2f}")
-            print(f"Average Closing Price: {float(data['close_price'].mean()):.2f}")
-            print(f"Total Volume: {data['volume'].sum():,.0f}")
-            print(f"Average {period_text} Volume: {data['volume'].mean():,.0f}")
-            
-        else:
-            # Show summary for all stocks
-            cursor = fetcher.db_connection.cursor()
-            cursor.execute(fetcher.queries['basic']['List all stocks summary'])
-            
-            results = cursor.fetchall()
-            if not results:
-                print("\nNo data in database")
-                return
+            if include_income:
+                income_data = fetcher.get_income_data_from_db()
                 
-            print("\nStock data in database:")
-            print("Stock No | First Date  | Last Date   | Records | Price Range")
-            print("-" * 65)
-            for row in results:
-                print(f"{row[0]:<8} | {row[1]} | {row[2]} | {row[3]:>7} | {row[4]:6.2f} - {row[5]:6.2f}")
-            
-            cursor.close()
-            
+                if income_data.empty:
+                    print(f"\nNo income data found for stock {stock_no}")
+                    return
+
+                if start_date:
+                    income_data = income_data[income_data['date'] >= pd.to_datetime(start_date)]
+                if end_date:
+                    income_data = income_data[income_data['date'] <= pd.to_datetime(end_date)]
+                
+                print(f"\nMonthly Income Records for Stock {stock_no}:")
+                if start_date and end_date:
+                    print(f"Period: {start_date} to {end_date}")
+                
+                print("\nDate       | Revenue      | Profit")
+                print("-" * 50)
+                
+                for _, row in income_data.iterrows():
+                    date_str = row['date'].strftime('%Y-%m')
+                    print(f"{date_str:10} | {row['revenue']:12,d} | {row['profit']:12,d}")
+                
+                print("\nSummary Statistics:")
+                print("-" * 40)
+                print(f"Total Months: {len(income_data)}")
+                print(f"Average Revenue: {income_data['revenue'].mean():,.0f}")
+                print(f"Average Profit: {income_data['profit'].mean():,.0f}")
+                print(f"Total Revenue: {income_data['revenue'].sum():,.0f}")
+                print(f"Total Profit: {income_data['profit'].sum():,.0f}")
+            else:
+                # 原有的價格資料顯示邏輯
+                data = fetcher.get_aggregated_data_from_db(period)
+                
+                # Filter by date range if provided
+                if start_date:
+                    data = data[data['date'] >= pd.to_datetime(start_date)]
+                if end_date:
+                    data = data[data['date'] <= pd.to_datetime(end_date)]
+                
+                if data.empty:
+                    print(f"\nNo data found for stock {stock_no}")
+                    return
+                
+                # Display header
+                period_text = {'D': 'Daily', 'W': 'Weekly', 'M': 'Monthly'}[period]
+                print(f"\n{period_text} Trading Records for Stock {stock_no}:")
+                if start_date and end_date:
+                    print(f"Period: {start_date} to {end_date}")
+                else:
+                    print("Latest records:")
+                
+                # Display data table
+                print("\nDate       | Volume      | Open  | High  | Low   | Close")
+                print("-" * 65)
+                
+                # Sort by date in descending order and limit to 10 if no date range
+                data = data.sort_values('date', ascending=False)
+                if not (start_date and end_date):
+                    data = data.head(10)
+                
+                # Display records with appropriate date format
+                date_format = '%Y-%m' if period == 'M' else '%Y-%m-%d'
+                for _, row in data.iterrows():
+                    date_str = row['date'].strftime(date_format)
+                    # Add padding for monthly format to align with header
+                    if period == 'M':
+                        date_str = f"{date_str}    "
+                    print(f"{date_str} | {row['volume']:11,.0f} | "
+                          f"{float(row['open_price']):5.2f} | {float(row['high_price']):5.2f} | "
+                          f"{float(row['low_price']):5.2f} | {float(row['close_price']):5.2f}")
+                
+                # Display summary statistics
+                print(f"\n{period_text} Summary Statistics:")
+                print("-" * 40)
+                
+                print(f"Total {period_text} Periods: {len(data)}")
+                print(f"Price Range: {float(data['low_price'].min()):.2f} - {float(data['high_price'].max()):.2f}")
+                print(f"Average Closing Price: {float(data['close_price'].mean()):.2f}")
+                print(f"Total Volume: {data['volume'].sum():,.0f}")
+                print(f"Average {period_text} Volume: {data['volume'].mean():,.0f}")
+                
+        else:
+            if include_income:
+                cursor = fetcher.db_connection.cursor()
+                cursor.execute(fetcher.queries['income']['List all income summary'])
+                results = cursor.fetchall()
+                cursor.close()
+
+                if not results:
+                    print("\nNo income data in database")
+                    return
+                    
+                print("\nStock Income Summary:")
+                print("Stock No | First Date | Last Date  | Records | Avg Revenue  | Avg Profit")
+                print("-" * 75)
+                for row in results:
+                    print(f"{row[0]:<8} | {row[1]} | {row[2]} | {row[3]:>7} | "
+                          f"{row[4]:>11,.0f} | {row[5]:>10,.0f}")
+            else:
+                cursor = fetcher.db_connection.cursor()
+                cursor.execute(fetcher.queries['basic']['List all stocks summary'])
+                
+                results = cursor.fetchall()
+                if not results:
+                    print("\nNo data in database")
+                    return
+                    
+                print("\nStock data in database:")
+                print("Stock No | First Date  | Last Date   | Records | Price Range")
+                print("-" * 65)
+                for row in results:
+                    print(f"{row[0]:<8} | {row[1]} | {row[2]} | {row[3]:>7} | {row[4]:6.2f} - {row[5]:6.2f}")
+                
+                cursor.close()
+                
         fetcher.disconnect_db()
         sys.stdout.flush()
             
     except Exception as e:
         print(f"Error listing stocks: {e}")
-        import traceback
         traceback.print_exc()
         sys.stdout.flush()
 
@@ -252,7 +310,6 @@ class StockApp:
                 print("pip install pyreadline3")
         
     def __del__(self) -> None:
-        # 保存命令歷史
         try:
             readline.write_history_file(self.history_file)
         except Exception as e:
@@ -281,10 +338,10 @@ class StockApp:
         if self.debug_mode:
             print(message)
 
-    def update_stock(self, stock_no) -> None:
+    def update_stock(self, stock_no, include_income=False) -> None:
         process = multiprocessing.Process(
             target=update_worker,
-            args=(stock_no, self.db_config, self.debug_mode)
+            args=(stock_no, self.db_config, self.debug_mode, include_income)
         )
         self.processes.append(process)
         process.start()
@@ -323,10 +380,10 @@ class StockApp:
             start_time = info['start_time'].strftime('%Y-%m-%d %H:%M:%S')
             print(f"{pid:<8} | {info['type']:<8} | {info['stock_no']:<5} | {start_time} | {info['status']}")
 
-    def plot_stock(self, stock_no, start_date=None, end_date=None, period='D') -> None:
+    def plot_stock(self, stock_no, start_date=None, end_date=None, period='D', plot_income=False):
         process = multiprocessing.Process(
             target=plot_worker,
-            args=(stock_no, start_date, end_date, self.db_config, period)
+            args=(stock_no, start_date, end_date, self.db_config, period, plot_income)
         )
         self.processes.append(process)
         process.start()
@@ -365,25 +422,25 @@ class StockApp:
     def run(self):
         print("Welcome to Stock Analysis App")
         print("Available commands:")
-        print(" - update <stock_number>")
-        print(" - plot <stock_number> [start_date] [end_date]")
-        print(" - analyze <stock_number> [start_date] [end_date]")
-        print(" - list [stock_number] [start_date] [end_date]")
+        print(" - update [-i] <stock_number>          # -i for income data")
+        print(" - plot <stock_number> [start_date] [end_date] [-i|-m|-w]")
+        print(" - analyze <stock_number> [start_date] [end_date] [-m|-w]")
+        print(" - list [-i] [stock_number] [start_date] [end_date] [-m|-w]")
         print(" - debug on|off")
         print(" - status")
         print(" - exit")
         print("Date format: YYYY-MM-DD")
+        print("Options:")
+        print("  -i: Include income data")
+        print("  -m: Monthly aggregation")
+        print("  -w: Weekly aggregation")
         print("\nTip: Use Up/Down arrows to navigate command history")
 
         while True:
             try:
-                # Check process status before showing prompt
                 self.check_processes()
-
-                # linux command style input
                 command = input("\n> ").strip()
-
-                # record the history command
+                
                 if command:
                     readline.add_history(command)
                 
@@ -391,12 +448,16 @@ class StockApp:
                 if not command:
                     continue
 
+                include_income = False
+                if '-i' in command:
+                    include_income = True
+                    command.remove('-i')
+
                 if command[0] == "exit":
                     print("Cleaning up and exiting...")
                     self.cleanup()
                     break
 
-                # Set the log is on or off
                 elif command[0] == "debug":
                     if len(command) != 2 or command[1] not in ['on', 'off']:
                         print("Usage: debug on|off")
@@ -409,11 +470,29 @@ class StockApp:
 
                 elif command[0] == "update":
                     if len(command) != 2:
-                        print("Usage: update <stock_number>")
+                        print("Usage: update [-i] <stock_number>")
                         continue
-                    self.update_stock(command[1])
+                    self.update_stock(command[1], include_income)
 
-                elif command[0] in ["plot", "analyze"]:
+                elif command[0] == "plot":
+                    # Extract period flag if present
+                    period = 'D'  # default daily
+                    if '-m' in command:
+                        period = 'M'
+                        command.remove('-m')
+                    elif '-w' in command:
+                        period = 'W'
+                        command.remove('-w')
+
+                    if len(command) < 2 or len(command) > 4:
+                        print(f"Usage: {command[0]} <stock_number> [start_date] [end_date] [-i|-m|-w]")
+                        continue
+
+                    start_date = self.parse_date(command[2]) if len(command) > 2 else None
+                    end_date = self.parse_date(command[3]) if len(command) > 3 else None
+                    self.plot_stock(command[1], start_date, end_date, period, include_income)
+
+                elif command[0] in ["analyze"]:
                     # Extract period flag if present
                     period = 'D'  # default daily
                     if '-m' in command:
@@ -429,11 +508,7 @@ class StockApp:
 
                     start_date = self.parse_date(command[2]) if len(command) > 2 else None
                     end_date = self.parse_date(command[3]) if len(command) > 3 else None
-                    
-                    if command[0] == "plot":
-                        self.plot_stock(command[1], start_date, end_date, period)
-                    else:  # analyze
-                        self.analyze_stock(command[1], start_date, end_date, period)
+                    self.analyze_stock(command[1], start_date, end_date, period)
 
                 elif command[0] == "list":
                     # Extract period flag if present
@@ -446,20 +521,20 @@ class StockApp:
                         command.remove('-w')
 
                     if len(command) > 4:
-                        print("Usage: list [stock_number] [start_date] [end_date] [-m|-w]")
+                        print("Usage: list [-i] [stock_number] [start_date] [end_date] [-m|-w]")
                         continue
                         
                     stock_no = command[1] if len(command) > 1 else None
                     start_date = self.parse_date(command[2]) if len(command) > 2 else None
                     end_date = self.parse_date(command[3]) if len(command) > 3 else None
-                    self.list_stocks(stock_no, start_date, end_date, period)
+                    self.list_stocks(stock_no, start_date, end_date, period, include_income)
 
                 else:
                     print("Unknown command. Available commands:")
-                    print("  update <stock_number>")
-                    print("  plot <stock_number> [start_date] [end_date]")
-                    print("  analyze <stock_number> [start_date] [end_date]")
-                    print("  list [stock_number] [start_date] [end_date]")
+                    print("  update [-i] <stock_number>")
+                    print("  plot <stock_number> [start_date] [end_date] [-i|-m|-w]")
+                    print("  analyze <stock_number> [start_date] [end_date] [-m|-w]")
+                    print("  list [-i] [stock_number] [start_date] [end_date] [-m|-w]")
                     print("  debug on|off")
                     print("  status")
                     print("  exit")
@@ -467,10 +542,10 @@ class StockApp:
             except Exception as e:
                 print(f"Error: {e}")
 
-    def list_stocks(self, stock_no=None, start_date=None, end_date=None, period='D'):
+    def list_stocks(self, stock_no=None, start_date=None, end_date=None, period='D', include_income=False):
         process = multiprocessing.Process(
             target=list_worker,
-            args=(self.db_config, stock_no, start_date, end_date, period)
+            args=(self.db_config, stock_no, start_date, end_date, period, include_income)
         )
         self.processes.append(process)
         process.start()
