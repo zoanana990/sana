@@ -8,7 +8,6 @@ import os
 class SQLLoader:
     @staticmethod
     def load_query(filename):
-        # 獲取當前文件（fetcher.py）所在目錄的上層目錄
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         file_path = os.path.join(base_dir, 'stock', 'sql', 'queries', filename)
         
@@ -23,7 +22,6 @@ class SQLLoader:
                            for q in queries}
                 return queries[0]
         except FileNotFoundError:
-            # 如果找不到文件，嘗試不同的路徑
             alternative_path = os.path.join(base_dir, 'sql', 'queries', filename)
             with open(alternative_path, 'r') as f:
                 queries = [q.strip() for q in f.read().split('--') if q.strip()]
@@ -72,7 +70,6 @@ class StockDataFetcher:
                     self.db_connection.commit()
                     cursor.close()
             except FileNotFoundError:
-                # 嘗試替代路徑
                 schema_path = os.path.join(base_dir, 'sql', 'schema.sql')
                 with open(schema_path, 'r') as sql_file:
                     cursor = self.db_connection.cursor()
@@ -88,14 +85,16 @@ class StockDataFetcher:
             raise
 
     def fetch_stock_data(self, date_str):
-        """嘗試從上市和上櫃市場抓取股票資料"""
-        # 先嘗試從上市市場抓取
+        """
+        Fetch the data from twse or tpex (some bug in tpex)
+        """
+        # Fetch the data from twse first
         data = self.fetch_twse_data(date_str)
         if data:
             print(f"Found {self.stock_no} in TWSE market")
             return data
             
-        # 如果上市市場沒有，嘗試從上櫃市場抓取
+        # if there is no data from twse, fetch the data from tpex
         data = self.fetch_tpex_data(date_str)
         if data:
             print(f"Found {self.stock_no} in TPEx market")
@@ -105,7 +104,9 @@ class StockDataFetcher:
         return None
 
     def fetch_twse_data(self, date_str):
-        """從台灣證券交易所抓取資料"""
+        """
+        request data from twse
+        """
         params = {
             'response': 'json',
             'date': date_str,
@@ -127,79 +128,28 @@ class StockDataFetcher:
             print(f"TWSE request failed: {e}")
             return None
 
+    # FIXME: there are some bug cannot fetch the data from tpex
     def fetch_tpex_data(self, date_str):
-        """從證券櫃檯買賣中心抓取資料"""
-        # 轉換日期格式 (yyyymmdd -> yyy/mm)
-        year = int(date_str[:4]) - 1911  # 轉換為民國年
-        month = date_str[4:6]
-        
-        params = {
-            'response': 'json',
-            'date': f'{year}/{month}/01',
-            'stockNo': self.stock_no
-        }
-        
-        url = "https://www.tpex.org.tw/web/stock/aftertrading/daily_trading_info/st43_result.php"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3'
-        }
-        
-        try:
-            response = requests.get(url, params=params, headers=headers)
-            response.raise_for_status()  # 如果回應不是 200 會拋出異常
-            
-            # 印出回應內容以便偵錯
-            print(f"TPEx response: {response.text[:200]}...")
-            
-            data = response.json()
-            if not data.get('data'):
-                return None
-
-            # 轉換資料格式以匹配 TWSE 格式
-            converted_data = []
-            for row in data['data']:
-                try:
-                    # 檢查是否有空值或無效值
-                    if '--' in row or not row[0]:  # 確保有日期
-                        continue
-                    
-                    converted_data.append([
-                        f"{year}/{row[0]}",  # 日期 (加上年份)
-                        row[1],  # 成交股數
-                        row[2],  # 成交金額
-                        row[3],  # 開盤價
-                        row[4],  # 最高價
-                        row[5],  # 最低價
-                        row[6],  # 收盤價
-                        row[7],  # 漲跌價差
-                        row[8]   # 成交筆數
-                    ])
-                except Exception as e:
-                    print(f"Error converting row {row}: {e}")
-                    continue
-            
-            return converted_data
-            
-        except requests.exceptions.RequestException as e:
-            print(f"TPEx request failed: {e}")
-            print(f"URL: {url}")
-            print(f"Params: {params}")
-            return None
+        """
+        Fetch data from tpex
+        """
+        pass
+        return None
 
     def get_last_update_date(self):
-        """獲取資料庫中最後更新的日期"""
+        """
+        get the last update date in SQL
+        """
         cursor = self.db_connection.cursor()
-        cursor.execute("""
-            SELECT MAX(date) 
-            FROM stock_prices 
-            WHERE stock_no = %s
-        """, (self.stock_no,))
+        cursor.execute(self.queries['basic']['Get last update date'], (self.stock_no,))
         last_date = cursor.fetchone()[0]
         cursor.close()
         return last_date
 
     def update_stock_data(self):
-        """下載並更新股票資料"""
+        """
+        Download and update data
+        """
         last_update = self.get_last_update_date()
         if last_update:
             start_date = last_update + timedelta(days=1)
@@ -228,7 +178,7 @@ class StockDataFetcher:
             except Exception as e:
                 print(f"Error fetching data: {e}")
             
-            time.sleep(3)  # 避免請求過於頻繁
+            time.sleep(3)
             current_date = (first_day + timedelta(days=32)).replace(day=1)
 
     def disconnect_db(self):
@@ -237,19 +187,20 @@ class StockDataFetcher:
             print("Database connection closed.")
 
     def insert_data(self, records):
-        """將資料插入資料庫"""
+        """
+        Insert data to SQL
+        """
         cursor = self.db_connection.cursor()
         
         for record in records:
             try:
-                # 轉換民國年為西元年
+                # Convert R.O.C. to A.D.
                 date_parts = record[0].split('/')
                 year = int(date_parts[0]) + 1911
                 month = int(date_parts[1])
                 day = int(date_parts[2])
                 date = datetime(year, month, day)
 
-                # 處理數值資料
                 volume = int(record[1].replace(",", ""))
                 turnover = int(record[2].replace(",", ""))
                 open_price = float(record[3].replace(",", "")) if record[3] != "--" else None
@@ -259,14 +210,9 @@ class StockDataFetcher:
                 price_change = record[7]
                 transaction_count = int(record[8].replace(",", ""))
 
-                # 使用 REPLACE INTO 來處理重複資料
-                cursor.execute("""
-                    REPLACE INTO stock_prices 
-                    (stock_no, date, volume, turnover, open_price, high_price, 
-                     low_price, close_price, price_change, transaction_count)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """, (self.stock_no, date, volume, turnover, open_price, high_price,
-                      low_price, close_price, price_change, transaction_count))
+                cursor.execute(self.queries['basic']['Insert or update stock data'], 
+                             (self.stock_no, date, volume, turnover, open_price, high_price,
+                              low_price, close_price, price_change, transaction_count))
                 
             except Exception as e:
                 print(f"Error processing record {record}: {e}")
@@ -277,16 +223,10 @@ class StockDataFetcher:
 
     def get_data_from_db(self):
         cursor = self.db_connection.cursor(dictionary=True)
-        cursor.execute("""
-            SELECT date, open_price, high_price, low_price, close_price, volume 
-            FROM stock_prices 
-            WHERE stock_no = %s
-            ORDER BY date
-        """, (self.stock_no,))
+        cursor.execute(self.queries['basic']['Get data from db'], (self.stock_no,))
         data = cursor.fetchall()
         cursor.close()
         df = pd.DataFrame(data)
-        # Ensure 'date' is in datetime format
         df['date'] = pd.to_datetime(df['date'])
         return df
 

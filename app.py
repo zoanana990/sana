@@ -27,11 +27,7 @@ def update_worker(stock_no: str, db_config, debug_mode=False):
         try:
             # Check if stock data exists in database
             cursor = fetcher.db_connection.cursor()
-            cursor.execute("""
-                SELECT COUNT(*) 
-                FROM stock_prices 
-                WHERE stock_no = %s
-            """, (stock_no,))
+            cursor.execute(fetcher.queries['basic']['Check stock exists'], (stock_no,))
             count = cursor.fetchone()[0]
             cursor.close()
 
@@ -46,11 +42,7 @@ def update_worker(stock_no: str, db_config, debug_mode=False):
             else:
                 # Check last update date
                 cursor = fetcher.db_connection.cursor()
-                cursor.execute("""
-                    SELECT MAX(date) 
-                    FROM stock_prices 
-                    WHERE stock_no = %s
-                """, (stock_no,))
+                cursor.execute(fetcher.queries['basic']['Get last update date for stock'], (stock_no,))
                 last_update = cursor.fetchone()[0]
                 cursor.close()
 
@@ -73,7 +65,7 @@ def update_worker(stock_no: str, db_config, debug_mode=False):
             print(f"Error message: {e.msg}")
         
         fetcher.disconnect_db()
-        print()  # 添加一個空行
+        print()
         sys.stdout.flush()
     except Exception as e:
         print(f"Error updating stock {stock_no}: {e}")
@@ -201,19 +193,9 @@ def list_worker(db_config, stock_no=None, start_date=None, end_date=None, period
             print(f"Average {period_text} Volume: {data['volume'].mean():,.0f}")
             
         else:
-            # Show summary for all stocks (unchanged)
+            # Show summary for all stocks
             cursor = fetcher.db_connection.cursor()
-            cursor.execute("""
-                SELECT stock_no, 
-                       MIN(date) as first_date, 
-                       MAX(date) as last_date,
-                       COUNT(*) as total_records,
-                       MIN(close_price) as min_price,
-                       MAX(close_price) as max_price
-                FROM stock_prices
-                GROUP BY stock_no
-                ORDER BY stock_no
-            """)
+            cursor.execute(fetcher.queries['basic']['List all stocks summary'])
             
             results = cursor.fetchall()
             if not results:
@@ -255,11 +237,14 @@ class StockApp:
         self.history_file = ".stock_app_history"
         try:
             readline.read_history_file(self.history_file)
-            readline.set_history_length(1000)  # 設置歷史記錄最大數量
+
+            # The maxima command history
+            readline.set_history_length(1000)
         except FileNotFoundError:
             pass
         
-        # 根據平台設置 readline
+        # Config readline depends on platform, in windows, we use pyreadline3
+        # normally, we used readline package
         if platform.system() == 'Windows':
             try:
                 import pyreadline3
@@ -267,19 +252,22 @@ class StockApp:
                 print("Tip: Install pyreadline3 for command history support:")
                 print("pip install pyreadline3")
         
-    def __del__(self):
+    def __del__(self) -> None:
         # 保存命令歷史
         try:
             readline.write_history_file(self.history_file)
         except Exception as e:
             print(f"Error saving history: {e}")
 
-    def signal_handler(self, signum, frame):
+    def signal_handler(self, signum, frame) -> None:
         print("\nReceived Ctrl+C, cleaning up...")
         self.cleanup()
         sys.exit(0)
 
-    def cleanup(self):
+    def cleanup(self) -> None:
+        """
+        Terminate all subprocess and this main process
+        """
         for process in self.processes:
             if process.is_alive():
                 print(f"Terminating process {process.pid}")
@@ -287,12 +275,14 @@ class StockApp:
                 process.join()
         self.processes = []
 
-    def log(self, message):
-        """根據 debug 模式決定是否輸出日誌"""
+    def log(self, message) -> None:
+        """
+        according to debug mode to determine the log is shown or not
+        """
         if self.debug_mode:
             print(message)
 
-    def update_stock(self, stock_no):
+    def update_stock(self, stock_no) -> None:
         process = multiprocessing.Process(
             target=update_worker,
             args=(stock_no, self.db_config, self.debug_mode)
@@ -307,8 +297,10 @@ class StockApp:
         }
         print(f"Started update process (PID: {process.pid})")
 
-    def check_processes(self):
-        """檢查所有進程的狀態並更新資訊"""
+    def check_processes(self) -> None:
+        """
+        Check the process status
+        """
         active_processes = []
         for process in self.processes:
             if process.is_alive():
@@ -320,8 +312,10 @@ class StockApp:
                         print(f"Process {process.pid} ({self.process_info[process.pid]['type']}) completed")
         self.processes = active_processes
 
-    def show_status(self):
-        """顯示所有進程的狀態"""
+    def show_status(self) -> None:
+        """
+        show all pid and the corresponding status
+        """
         self.check_processes()
         print("\nCurrent processes status:")
         print("PID      | Type     | Stock | Start Time          | Status")
@@ -330,7 +324,7 @@ class StockApp:
             start_time = info['start_time'].strftime('%Y-%m-%d %H:%M:%S')
             print(f"{pid:<8} | {info['type']:<8} | {info['stock_no']:<5} | {start_time} | {info['status']}")
 
-    def plot_stock(self, stock_no, start_date=None, end_date=None, period='D'):
+    def plot_stock(self, stock_no, start_date=None, end_date=None, period='D') -> None:
         process = multiprocessing.Process(
             target=plot_worker,
             args=(stock_no, start_date, end_date, self.db_config, period)
@@ -345,7 +339,7 @@ class StockApp:
         }
         print(f"Started plotting process (PID: {process.pid})")
 
-    def analyze_stock(self, stock_no, start_date=None, end_date=None, period='D'):
+    def analyze_stock(self, stock_no, start_date=None, end_date=None, period='D') -> None:
         process = multiprocessing.Process(
             target=analyze_worker,
             args=(stock_no, start_date, end_date, self.db_config, period)
@@ -386,8 +380,11 @@ class StockApp:
             try:
                 # Check process status before showing prompt
                 self.check_processes()
-                
+
+                # linux command style input
                 command = input("\n> ").strip()
+
+                # record the history command
                 if command:
                     readline.add_history(command)
                 
@@ -400,6 +397,7 @@ class StockApp:
                     self.cleanup()
                     break
 
+                # Set the log is on or off
                 elif command[0] == "debug":
                     if len(command) != 2 or command[1] not in ['on', 'off']:
                         print("Usage: debug on|off")
