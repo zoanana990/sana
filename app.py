@@ -183,7 +183,6 @@ def list_worker(db_config, stock_no=None, start_date=None, end_date=None, period
                 print(f"Total Revenue: {income_data['revenue'].sum():,.0f}")
                 print(f"Total Profit: {income_data['profit'].sum():,.0f}")
             else:
-                # 原有的價格資料顯示邏輯
                 data = fetcher.get_aggregated_data_from_db(period)
                 
                 # Filter by date range if provided
@@ -423,7 +422,7 @@ class StockApp:
         print("Available commands:")
         print(" - update [-i] <stock_number>          # -i for income data")
         print(" - plot <stock_number> [start_date] [end_date] [-i|-m|-w]")
-        print(" - analyze <stock_number> [start_date] [end_date] [-m|-w]")
+        print(" - analyze <stock_number> [start_date] [end_date] [-m|-w]  # Pattern analysis")
         print(" - list [-i] [stock_number] [start_date] [end_date] [-m|-w]")
         print(" - debug on|off")
         print(" - status")
