@@ -4,6 +4,7 @@ import requests
 import time
 from datetime import datetime, timedelta
 import os
+import yfinance as yf
 
 class SQLLoader:
     @staticmethod
@@ -130,13 +131,50 @@ class StockDataFetcher:
             print(f"TWSE request failed: {e}")
             return None
 
-    # FIXME: there are some bug cannot fetch the data from tpex
     def fetch_tpex_data(self, date_str):
         """
-        Fetch data from tpex
+        Fetch data from yfinance for TPEx stocks
         """
-        pass
-        return None
+        try:
+            # Convert stock number to Taiwan stock symbol format
+            symbol = f"{self.stock_no}.TW"  # For TWSE stocks
+            if not self.fetch_twse_data(date_str):  # If not found in TWSE
+                symbol = f"{self.stock_no}.TWO"  # For TPEx stocks
+            
+            # Parse date string to datetime
+            date_parts = [int(date_str[:4]), int(date_str[4:6]), int(date_str[6:])]
+            start_date = datetime(*date_parts)
+            end_date = (start_date.replace(day=1) + timedelta(days=32)).replace(day=1)
+            
+            # Fetch data from yfinance
+            stock = yf.Ticker(symbol)
+            hist = stock.history(start=start_date, end=end_date)
+            
+            if hist.empty:
+                return None
+            
+            # Convert yfinance data to TWSE format
+            converted_data = []
+            for index, row in hist.iterrows():
+                date_str = f"{index.year-1911}/{index.month}/{index.day}"  # Convert to ROC calendar
+                converted_row = [
+                    date_str,
+                    str(int(row['Volume'])),
+                    str(int(row['Volume'] * row['Close'])),  # Approximate turnover
+                    str(row['Open']),
+                    str(row['High']),
+                    str(row['Low']),
+                    str(row['Close']),
+                    str(round(row['Close'] - row['Open'], 2)),  # Price change
+                    str(int(row['Volume'] / 1000))  # Approximate transaction count
+                ]
+                converted_data.append(converted_row)
+            
+            return converted_data
+            
+        except Exception as e:
+            print(f"Error fetching from yfinance: {e}")
+            return None
 
     def get_last_update_date(self):
         """
@@ -253,17 +291,62 @@ class StockDataFetcher:
             df['date'] = pd.to_datetime(df['date'])
         return df
 
-    # FIXME: data source does not exist
     def fetch_income_data(self, year, month):
-        return None
+        """
+        Fetch income data from yfinance
+        """
+        try:
+            symbol = f"{self.stock_no}.TW"  # Try TWSE first
+            stock = yf.Ticker(symbol)
+            
+            if not stock.info:  # If not found in TWSE
+                symbol = f"{self.stock_no}.TWO"  # Try TPEx
+                stock = yf.Ticker(symbol)
+            
+            # Get quarterly financials
+            financials = stock.quarterly_financials
+            
+            if financials.empty:
+                return None
+            
+            # Create data dictionary
+            data = {
+                'date': datetime(year, month, 1),
+                'revenue': financials.loc['Total Revenue'].iloc[0] if 'Total Revenue' in financials.index else None,
+                'profit': financials.loc['Net Income'].iloc[0] if 'Net Income' in financials.index else None
+            }
+            
+            return data
+            
+        except Exception as e:
+            print(f"Error fetching income data: {e}")
+            return None
 
-    # FIXME: the data source have no data
     def update_income_data(self):
         """
-        update the income data
+        Update income data using yfinance
         """
-        print("Data source have no data, not supported currently")
-        return None
+        last_update = self.get_last_income_update()
+        if last_update:
+            start_date = last_update + timedelta(days=1)
+        else:
+            start_date = self.start_date
+
+        current_date = start_date
+        end_date = self.end_date.date() if isinstance(self.end_date, datetime) else self.end_date
+        
+        while current_date <= end_date:
+            try:
+                data = self.fetch_income_data(current_date.year, current_date.month)
+                if data:
+                    self.insert_income_data(data)
+                    print(f"Successfully inserted income data for {self.stock_no} - {current_date.strftime('%Y-%m')}")
+                else:
+                    print(f"No income data available for {self.stock_no} in {current_date.strftime('%Y-%m')}")
+            except Exception as e:
+                print(f"Error updating income data: {e}")
+            
+            current_date = (current_date.replace(day=1) + timedelta(days=32)).replace(day=1)
 
     def get_last_income_update(self):
         """

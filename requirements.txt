@@ -4,3 +4,4 @@ mplfinance
 requests
 pyreadline3
 beautifulsoup4>=4.9.3
+yfinance>=0.2.31
