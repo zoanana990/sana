@@ -25,7 +25,6 @@ def update_worker(stock_no: str, db_config, debug_mode=False, include_income=Fal
         fetcher = StockDataFetcher(db_config, stock_no, start_date, end_date)
         fetcher.connect_db()
 
-        # 更新價格資料
         try:
             cursor = fetcher.db_connection.cursor()
             cursor.execute(fetcher.queries['basic']['Check stock exists'], (stock_no,))
